@@ -11,9 +11,11 @@ Packet incoming;
 
 void OnDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
 
+  Serial.println("Packet received");
+
   memcpy(&incoming, data, sizeof(incoming));
 
-  Serial.print("Received: ");
+  Serial.print("Data: ");
   Serial.println(incoming.json);
 
   esp_now_send(broadcastAddress,(uint8_t*)&incoming,sizeof(incoming));
@@ -24,6 +26,9 @@ void OnDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
 void setup() {
 
   Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("Bridge node booting...");
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -43,4 +48,6 @@ void setup() {
 }
 
 void loop() {
+  Serial.println("Waiting for packets...");
+  delay(5000);
 }
