@@ -1,7 +1,9 @@
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 
-uint8_t broadcastAddress[] = {0xff,0xff,0xff,0xff,0xff,0xff};
+#define STATUS_LED 2 // Onboard LED
+
+uint8_t broadcastAddress[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 typedef struct {
   char json[200];
@@ -9,26 +11,32 @@ typedef struct {
 
 Packet incoming;
 
-void OnDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
+unsigned long ledOffTime = 0;
+const int blinkDuration = 80;
 
-  Serial.println("Packet received");
+void OnDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
+  digitalWrite(STATUS_LED, LOW);
+  ledOffTime = millis() + blinkDuration;
 
   memcpy(&incoming, data, sizeof(incoming));
 
-  Serial.print("Data: ");
+  Serial.print("Received & Rebroadcasting: ");
   Serial.println(incoming.json);
 
-  esp_now_send(broadcastAddress,(uint8_t*)&incoming,sizeof(incoming));
+  esp_now_send(broadcastAddress, (uint8_t*)&incoming, sizeof(incoming));
+}
 
-  Serial.println("Rebroadcasted");
+void updateLED() {
+  if (millis() >= ledOffTime && digitalRead(STATUS_LED) == LOW) {
+    digitalWrite(STATUS_LED, HIGH);
+  }
 }
 
 void setup() {
-
   Serial.begin(115200);
-  delay(1000);
-
-  Serial.println("Bridge node booting...");
+  
+  pinMode(STATUS_LED, OUTPUT);
+  digitalWrite(STATUS_LED, HIGH);
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -39,15 +47,18 @@ void setup() {
   }
 
   esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-
   esp_now_register_recv_cb(OnDataRecv);
+  esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_COMBO, 1, NULL, 0);
 
-  esp_now_add_peer(broadcastAddress, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
-
-  Serial.println("Bridge node started");
+  Serial.println("Bridge node initialized.");
 }
 
 void loop() {
-  Serial.println("Waiting for packets...");
-  delay(5000);
+  updateLED();
+  
+  static unsigned long lastHeartbeat = 0;
+  if (millis() - lastHeartbeat > 10000) {
+    Serial.println("Status: Waiting for packets...");
+    lastHeartbeat = millis();
+  }
 }
