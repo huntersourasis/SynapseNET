@@ -1,20 +1,20 @@
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h> // Required for channel locking
 #include <ESPAsyncWebServer.h>
 #include <map>
 #define LED 2
 
-
 AsyncWebServer server(80);
 AsyncEventSource events("/events");
 
-struct SensorData {
-  float temp;
-  float hum;
-  int mq2;
-  int mq135;
-  int vibration;
-} incomingData;
+// 1. MUST MATCH THE SENSOR AND BRIDGES EXACTLY
+typedef struct __attribute__((packed)) {
+  uint8_t ttl;
+  char json[250];
+} Packet;
+
+Packet incomingData;
 
 std::map<String, unsigned long> onlineNodes;
 
@@ -156,10 +156,10 @@ const char index_html[] PROGMEM = R"rawliteral(
                 sChart.update();
                 pChart.update();
 
-                // Vibration Logic
+                // Vibration Logic (Updated to use obj.vib to match ESP32 Sensor JSON)
                 const v = document.getElementById("vibBox");
-                v.innerText = obj.vibration == 1 ? "VIBRATION DETECTED" : "SYSTEM STABLE";
-                v.style.background = obj.vibration == 1 ? "#ef4444" : "#10b981";
+                v.innerText = obj.vib == 1 ? "VIBRATION DETECTED" : "SYSTEM STABLE";
+                v.style.background = obj.vib == 1 ? "#ef4444" : "#10b981";
                 v.style.color = "white";
 
                 document.getElementById("nodeList").innerText = obj.nodes + " Node(s) Online";
@@ -181,10 +181,17 @@ const char index_html[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingBytes, int len) {
+  // Safety check to avoid crashing if malformed data arrives
+  if (len != sizeof(Packet)) {
+    Serial.println("Ignored invalid packet size.");
+    return;
+  }
+
   digitalWrite(LED, HIGH);
   ledOffTime = millis() + blinkDuration;
   memcpy(&incomingData, incomingBytes, sizeof(incomingData));
   
+  // Track active nodes (This will track the MAC of the bridge that relayed it)
   char macStr[18];
   snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   onlineNodes[String(macStr)] = millis();
@@ -194,16 +201,18 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingBytes, int len) {
     if (millis() - val < 10000) activeCount++;
   }
 
-  String json = "{";
-  json += "\"temp\":" + String(incomingData.temp) + ",";
-  json += "\"hum\":" + String(incomingData.hum) + ",";
-  json += "\"mq2\":" + String(incomingData.mq2) + ",";
-  json += "\"mq135\":" + String(incomingData.mq135) + ",";
-  json += "\"vibration\":" + String(incomingData.vibration) + ",";
-  json += "\"nodes\":" + String(activeCount);
-  json += "}";
+  // 2. DATA TRANSLATION: Extract the incoming JSON and append the node count
+  String jsonPayload = String(incomingData.json);
   
-  events.send(json.c_str(), "new_readings", millis());
+  // Find the closing bracket '}' and replace it with our node data
+  int closingBracketPos = jsonPayload.lastIndexOf('}');
+  if (closingBracketPos != -1) {
+    jsonPayload.remove(closingBracketPos); // Strip the '}'
+    jsonPayload += ",\"nodes\":" + String(activeCount) + "}"; // Add node count and close it
+  }
+
+  // Send the newly formatted JSON to the web dashboard
+  events.send(jsonPayload.c_str(), "new_readings", millis());
 }
 
 void setup() {
@@ -212,8 +221,17 @@ void setup() {
   pinMode(LED, OUTPUT);
   digitalWrite(LED, LOW);
 
-  WiFi.softAP("SynapseNET", "12345678");
-  if (esp_now_init() != ESP_OK) return;
+  WiFi.mode(WIFI_AP_STA);
+  
+  // 3. CHANNEL LOCKING: Force SoftAP to Channel 1 (Matches the mesh network)
+  WiFi.softAP("SynapseNET", "12345678", 1, 0, 4); 
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); 
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed!");
+    return;
+  }
+  
   esp_now_register_recv_cb(OnDataRecv);
   
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -221,6 +239,8 @@ void setup() {
   });
   server.addHandler(&events);
   server.begin();
+
+  Serial.println("Ground Node Initialized on Channel 1!");
 }
 
 void loop() 
